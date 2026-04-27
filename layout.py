@@ -4,7 +4,8 @@ from models import Seat, Purchase
 
 
 def generate_layout(total_seats=None, num_rows=None, num_cols=None,
-                    num_aisles=2, gap_probability=0.05, seed=None):
+                    num_aisles=2, gap_probability=0.05,
+                    occupied_ratio=0.15, seed=None):
     if seed is not None:
         random.seed(seed)
 
@@ -51,7 +52,12 @@ def generate_layout(total_seats=None, num_rows=None, num_cols=None,
 
     candidates.sort(key=lambda x: (x[0], x[1]))
 
-    seats = [Seat(id=i, row=r, col=c) for i, (r, c) in enumerate(candidates)]
+    num_occupied = max(1, int(total_seats * occupied_ratio)) if occupied_ratio > 0 else 0
+    occupied_indices = set(random.sample(range(len(candidates)), num_occupied))
+
+    seats = []
+    for i, (r, c) in enumerate(candidates):
+        seats.append(Seat(id=i, row=r, col=c, occupied=(i in occupied_indices)))
 
     actual_max_col = max(s.col for s in seats) if seats else num_cols
     actual_max_row = max(s.row for s in seats) if seats else num_rows
@@ -59,28 +65,32 @@ def generate_layout(total_seats=None, num_rows=None, num_cols=None,
     return seats, actual_max_row + 1, actual_max_col + 1, aisle_cols
 
 
-def generate_purchases(total_seats, num_purchases=None, seed=None):
+def generate_purchases(available_seats, num_purchases=None, seed=None):
     if seed is not None:
-        random.seed(seed)
+        random.seed(seed + 100)
 
     if num_purchases is None:
         num_purchases = random.randint(
-            max(5, total_seats // 10),
-            max(8, total_seats // 4)
+            max(5, available_seats // 10),
+            max(8, available_seats // 4)
         )
-    num_purchases = max(1, min(num_purchases, total_seats))
+    num_purchases = max(1, min(num_purchases, available_seats))
 
     sizes = [1] * num_purchases
-    remaining = total_seats - num_purchases
+    remaining = available_seats - num_purchases
 
-    max_group = max(2, total_seats // num_purchases + 2)
+    if remaining < 0:
+        num_purchases = available_seats
+        sizes = [1] * num_purchases
+        remaining = 0
+
+    max_group = max(2, available_seats // num_purchases + 2)
 
     attempts = 0
-    while remaining > 0 and attempts < total_seats * 10:
+    while remaining > 0 and attempts < available_seats * 10:
         attempts += 1
         idx = random.randint(0, num_purchases - 1)
 
-        add = 1
         roll = random.random()
         if roll < 0.5:
             add = 1

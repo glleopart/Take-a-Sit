@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 
@@ -7,11 +7,12 @@ class Seat:
     id: int
     row: int
     col: int
+    occupied: bool = False
     purchase_id: Optional[int] = None
 
     @property
-    def assigned(self) -> bool:
-        return self.purchase_id is not None
+    def available(self) -> bool:
+        return not self.occupied and self.purchase_id is None
 
 
 @dataclass

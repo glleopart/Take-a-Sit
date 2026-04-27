@@ -20,14 +20,8 @@ def compute_spread(seat_ids, seat_map):
     return (max(rows) - min(rows)) + (max(cols) - min(cols))
 
 
-def compute_total_pairwise(seat_ids, seat_map):
-    if len(seat_ids) <= 1:
-        return 0
-    total = 0
-    for i in range(len(seat_ids)):
-        for j in range(i + 1, len(seat_ids)):
-            total += manhattan(seat_map[seat_ids[i]], seat_map[seat_ids[j]])
-    return total
+def get_free_seats(seats):
+    return [s for s in seats if not s.occupied]
 
 
 def find_best_group(available_ids, seat_map, n, seed_limit=50):
@@ -76,8 +70,9 @@ def find_best_group(available_ids, seat_map, n, seed_limit=50):
 
 def greedy_assign(seats, purchases, sort_key, seed_limit=50, name="Greedy"):
     start = time.time()
-    available = set(s.id for s in seats)
+    free_seats = get_free_seats(seats)
     seat_map = {s.id: s for s in seats}
+    available = set(s.id for s in free_seats)
     assignments = {}
 
     for purchase in sorted(purchases, key=sort_key):
@@ -102,7 +97,7 @@ def greedy_by_order(seats, purchases):
         seats, purchases,
         sort_key=lambda p: p.order,
         seed_limit=30,
-        name="Voraz por Orden de Compra"
+        name="Greedy by Order"
     )
 
 
@@ -111,7 +106,7 @@ def greedy_by_group_size(seats, purchases):
         seats, purchases,
         sort_key=lambda p: (-p.num_seats, p.order),
         seed_limit=30,
-        name="Voraz por Tamano de Grupo"
+        name="Greedy by Group Size"
     )
 
 
@@ -120,7 +115,7 @@ def greedy_compact(seats, purchases):
         seats, purchases,
         sort_key=lambda p: (-p.num_seats, p.order),
         seed_limit=300,
-        name="Voraz Compacto"
+        name="Greedy Compact"
     )
 
 
@@ -132,19 +127,20 @@ def ilp_pulp(seats, purchases, time_limit=60):
         return AssignmentResult(
             algorithm_name="ILP (PuLP)",
             assignments={},
-            metrics={"error": "PuLP no esta instalado. Ejecuta: pip install pulp"},
+            metrics={"error": "PuLP not installed. Run: pip install pulp"},
             elapsed_time=0
         )
 
     seat_map = {s.id: s for s in seats}
+    free_seats = get_free_seats(seats)
     P = len(purchases)
-    S = len(seats)
+    S = len(free_seats)
 
     total_x_vars = P * S
     if total_x_vars > 10000:
         fallback = greedy_by_group_size(seats, purchases)
-        fallback.metrics["solver_status"] = "Omitido"
-        fallback.metrics["note"] = f"Instancia grande ({total_x_vars} vars). Se uso Voraz."
+        fallback.metrics["solver_status"] = "Skipped"
+        fallback.metrics["note"] = f"Instance too large ({total_x_vars} vars). Greedy used instead."
         return AssignmentResult(
             algorithm_name="ILP (PuLP)",
             assignments=fallback.assignments,
@@ -158,13 +154,13 @@ def ilp_pulp(seats, purchases, time_limit=60):
 
     x = {}
     for p in purchases:
-        for s in seats:
+        for s in free_seats:
             x[p.id, s.id] = pulp.LpVariable(f"x_{p.id}_{s.id}", cat='Binary')
 
     for p in purchases:
-        prob += pulp.lpSum(x[p.id, s.id] for s in seats) == p.num_seats
+        prob += pulp.lpSum(x[p.id, s.id] for s in free_seats) == p.num_seats
 
-    for s in seats:
+    for s in free_seats:
         prob += pulp.lpSum(x[p.id, s.id] for p in purchases) <= 1
 
     r_min = {p.id: pulp.LpVariable(f"rmin_{p.id}", lowBound=0) for p in purchases}
@@ -172,8 +168,8 @@ def ilp_pulp(seats, purchases, time_limit=60):
     c_min = {p.id: pulp.LpVariable(f"cmin_{p.id}", lowBound=0) for p in purchases}
     c_max = {p.id: pulp.LpVariable(f"cmax_{p.id}", lowBound=0) for p in purchases}
 
-    max_row_val = max(s.row for s in seats)
-    max_col_val = max(s.col for s in seats)
+    max_row_val = max(s.row for s in free_seats)
+    max_col_val = max(s.col for s in free_seats)
     big_M = max(max_row_val, max_col_val) + 1
 
     for p in purchases:
@@ -183,7 +179,7 @@ def ilp_pulp(seats, purchases, time_limit=60):
         c_max[p.id].upBound = max_col_val
 
     for p in purchases:
-        for s in seats:
+        for s in free_seats:
             prob += r_min[p.id] <= s.row + big_M * (1 - x[p.id, s.id])
             prob += r_max[p.id] >= s.row - big_M * (1 - x[p.id, s.id])
             prob += c_min[p.id] <= s.col + big_M * (1 - x[p.id, s.id])
@@ -197,7 +193,7 @@ def ilp_pulp(seats, purchases, time_limit=60):
     epsilon = 0.01 / max(P, 1)
     front_obj = pulp.lpSum(
         s.row * x[p.id, s.id]
-        for p in purchases for s in seats
+        for p in purchases for s in free_seats
     )
     prob += spread_obj + epsilon * front_obj
 
@@ -210,7 +206,7 @@ def ilp_pulp(seats, purchases, time_limit=60):
     all_correct = True
     for p in purchases:
         assigned = [
-            s.id for s in seats
+            s.id for s in free_seats
             if pulp.value(x[p.id, s.id]) is not None
             and pulp.value(x[p.id, s.id]) > 0.5
         ]
@@ -228,7 +224,7 @@ def ilp_pulp(seats, purchases, time_limit=60):
     if ilp_metrics.get("total_spread", float('inf')) > greedy_metrics.get("total_spread", float('inf')):
         assignments = {k: list(v) for k, v in greedy_init.assignments.items()}
         ilp_metrics = dict(greedy_metrics)
-        ilp_metrics["note"] = "Solucion Voraz (mejor que ILP)"
+        ilp_metrics["note"] = "Greedy solution (better than ILP)"
 
     elapsed = time.time() - start
     ilp_metrics["solver_status"] = status
@@ -248,16 +244,12 @@ def local_search(seats, purchases, initial_result=None, max_no_improve=3, seed=N
         random.seed(seed)
 
     seat_map = {s.id: s for s in seats}
-    purchase_map = {p.id: p for p in purchases}
 
     if initial_result is not None:
         assignments = {k: list(v) for k, v in initial_result.assignments.items()}
     else:
         base = greedy_by_group_size(seats, purchases)
         assignments = {k: list(v) for k, v in base.assignments.items()}
-
-    def total_spread(assigns):
-        return sum(compute_spread(s_ids, seat_map) for s_ids in assigns.values())
 
     no_improve_count = 0
     total_iterations = 0
@@ -310,9 +302,9 @@ def local_search(seats, purchases, initial_result=None, max_no_improve=3, seed=N
     metrics["iterations"] = total_iterations
     metrics["improvements"] = total_improvements
 
-    base_name = initial_result.algorithm_name if initial_result else "Voraz por Tamano de Grupo"
+    base_name = initial_result.algorithm_name if initial_result else "Greedy by Group Size"
     return AssignmentResult(
-        algorithm_name=f"Busqueda Local (desde {base_name})",
+        algorithm_name=f"Local Search (from {base_name})",
         assignments=assignments,
         metrics=metrics,
         elapsed_time=elapsed
@@ -363,6 +355,7 @@ def compute_metrics(seats, purchases, assignments):
         })
 
     assigned_seats = sum(len(v) for v in assignments.values())
+    free_seats = len([s for s in seats if not s.occupied])
     total_seats = len(seats)
 
     return {
@@ -373,7 +366,9 @@ def compute_metrics(seats, purchases, assignments):
         "groups_total": groups_total,
         "pct_compact": round(groups_compact / groups_total * 100, 1) if groups_total > 0 else 0,
         "seats_assigned": assigned_seats,
+        "seats_free": free_seats,
+        "seats_occupied": total_seats - free_seats,
         "seats_total": total_seats,
-        "fill_rate": round(assigned_seats / total_seats * 100, 1) if total_seats > 0 else 0,
+        "fill_rate": round(assigned_seats / free_seats * 100, 1) if free_seats > 0 else 0,
         "group_details": group_details
     }
